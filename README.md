@@ -1,6 +1,6 @@
-# Low-Latency Trading Gateway
+# Trading Gateway
 
-A high-performance trading gateway designed for microsecond-level latency and hundreds of thousands of messages per second throughput.
+A trading gateway implementation with lock-free data structures and custom binary protocol.
 
 ## 🏗️ Architecture
 
@@ -40,32 +40,19 @@ A high-performance trading gateway designed for microsecond-level latency and hu
                     └───────────────────────────┘
 ```
 
-## 🚀 Performance
-
-### Latency
-- **Order Entry**: ~15μs average
-- **Order Matching**: ~20μs average  
-- **Trade Execution**: ~10μs average
-- **Market Data**: ~8μs average
-
-### Throughput
-- **Messages/sec**: 500K+
-- **Orders/sec**: 100K+
-- **Concurrent Clients**: 1000+
-
 ## 🛠️ Technology Stack
 
 ### C++ Core (C++20)
 - **Matching Engine**: Lock-free order book with price-time priority
-- **Order Gateway**: High-performance TCP server with custom binary protocol
+- **Order Gateway**: TCP server with custom binary protocol
 - **Network Layer**: Zero-copy message parsing, TCP optimization
 - **Concurrency**: Atomic operations, thread pinning, memory pools
 
 ### Rust API
-- **Web Framework**: Actix-web for high-performance HTTP server
-- **Database**: SQLx for type-safe PostgreSQL access
-- **Caching**: Redis for high-speed data access
-- **Metrics**: Prometheus for performance monitoring
+- **Web Framework**: Actix-web for HTTP server
+- **Database**: SQLx for PostgreSQL access
+- **Caching**: Redis for data access
+- **Metrics**: Prometheus for monitoring
 
 ### Infrastructure
 - **Database**: PostgreSQL for persistent storage
@@ -102,74 +89,6 @@ trading-platform/
 │   └── init.sql            # Database schema
 ├── docker-compose.yml       # Development environment
 └── README.md
-```
-
-## 🏃‍♂️ Quick Start
-
-### Prerequisites
-- C++20 compatible compiler
-- Rust 1.75+
-- Docker & Docker Compose
-- PostgreSQL client tools
-
-### Development Setup
-
-1. **Clone and setup**:
-```bash
-git clone <repository>
-cd Low-Latency_Trading_Gateway
-```
-
-2. **Start infrastructure**:
-```bash
-docker-compose up -d
-```
-
-3. **Build C++ components**:
-```bash
-cd cpp-core
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-```
-
-4. **Build Rust API**:
-```bash
-cd rust-api
-cargo build --release
-```
-
-5. **Run the system**:
-```bash
-# Start matching engine and gateway
-./cpp-core/build/order_gateway
-
-# Start REST API (in another terminal)
-cd rust-api
-cargo run --release
-```
-
-### Testing
-
-1. **Benchmark performance**:
-```bash
-cd benchmarks
-g++ -O3 -std=c++20 benchmark.cpp -o benchmark -lpthread
-./benchmark localhost 8080 10 1000
-```
-
-2. **Test API endpoints**:
-```bash
-# Health check
-curl http://localhost:8080/api/v1/health
-
-# Create order
-curl -X POST http://localhost:8080/api/v1/orders \
-  -H "Content-Type: application/json" \
-  -d '{"symbol":"AAPL","side":"buy","quantity":100,"price":15000}'
-
-# Get order book
-curl http://localhost:8080/api/v1/orderbook/AAPL
 ```
 
 ## 🔧 Configuration
@@ -253,7 +172,7 @@ RUST_LOG=info
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🎯 Why This Design
+## 🎯 Design Principles
 
 ### Lock-free Architecture
 - **Deterministic Latency**: No blocking operations
@@ -261,7 +180,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **Scalability**: Linear performance scaling with cores
 
 ### Custom Binary Protocol
-- **Minimal Overhead**: ~1μs serialization vs ~10μs for protobuf
+- **Minimal Overhead**: Custom serialization format
 - **Network Efficiency**: Compact message format
 - **Parsing Speed**: Simple, predictable parsing time
 
@@ -271,20 +190,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **Best of Both**: Performance where it matters, safety where it counts
 
 ### In-memory Processing
-- **Microsecond Latency**: Memory access vs disk I/O
+- **Memory Access**: Fast in-memory operations
 - **High Throughput**: No I/O bottlenecks during matching
 - **Simple Recovery**: Rebuild from trade log
 
 ---
 
-**Designed for Senior-Level Trading Systems Engineering**
-
 This project demonstrates:
-- Low-latency system design
 - Lock-free concurrent programming
 - Custom protocol implementation
 - Performance optimization techniques
 - Modern C++ and Rust development
 - Production-ready architecture
-
-Perfect for trading companies, hedge funds, and financial technology firms looking for high-performance trading infrastructure.

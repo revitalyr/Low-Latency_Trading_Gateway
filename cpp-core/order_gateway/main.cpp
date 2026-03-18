@@ -29,8 +29,9 @@ int main(int argc, char* argv[]) {
         GatewayServer server(port);
         gateway = &server;
         
-        if (!server.start()) {
-            std::cerr << "Failed to start server" << std::endl;
+        auto result = server.start();
+        if (!result) {
+            std::cerr << "Fatal error: " << result.error() << std::endl;
             return 1;
         }
         

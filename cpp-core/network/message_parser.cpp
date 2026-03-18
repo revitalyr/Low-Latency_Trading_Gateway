@@ -91,4 +91,33 @@ size_t MessageParser::serialize_trade(const Trade& trade, char* buffer) {
                            sizeof(MessageHeader) + sizeof(Trade));
 }
 
+std::optional<Order> MessageParser::parse(const uint8_t* data, size_t len) {
+    // Структура Wire-формата, совпадающая с тем, что отправляется в тестах
+    #pragma pack(push, 1)
+    struct WireNewOrder {
+        uint8_t type;
+        uint64_t order_id;
+        uint64_t price;
+        uint32_t quantity;
+        char symbol[8];
+        char side;
+    };
+    #pragma pack(pop)
+
+    if (len < sizeof(WireNewOrder)) {
+        return std::nullopt;
+    }
+
+    const auto* msg = reinterpret_cast<const WireNewOrder*>(data);
+
+    if (static_cast<MessageType>(msg->type) != MessageType::NEW_ORDER) {
+        return std::nullopt;
+    }
+
+    // Конвертация в Order (конструктор Order определён в хедере)
+    std::string symbol_str(msg->symbol, strnlen(msg->symbol, 8));
+    bool is_buy = (msg->side == 'B');
+    return Order(msg->order_id, msg->price, msg->quantity, symbol_str, is_buy);
+}
+
 } // namespace trading

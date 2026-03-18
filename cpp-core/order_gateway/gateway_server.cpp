@@ -15,12 +15,20 @@
 
 namespace trading {
 
-GatewayServer::GatewayServer(uint16_t port) {
-    tcp_server_ = std::make_unique<TCPServer>(port);
-    matching_engine_ = std::make_unique<MatchingEngine>();
+GatewayServer::GatewayServer(Port port) : m_port(port) {
+    m_tcp_server = std::make_unique<TCPServer>(port);
+    m_matching_engine = std::make_unique<MatchingEngine>();
     
+    // Set up session handlers
+    m_tcp_server->set_connect_handler([this](int client_fd) {
+        register_client(client_fd);
+    });
+    m_tcp_server->set_disconnect_handler([this](int client_fd) {
+        unregister_client(client_fd);
+    });
+
     // Set up message handler
-    tcp_server_->set_message_handler([this](int client_fd, const char* data, size_t length) {
+    m_tcp_server->set_message_handler([this](int client_fd, const char* data, size_t length) {
         // Parse message header
         if (length < sizeof(MessageHeader)) {
             return;
@@ -56,66 +64,95 @@ GatewayServer::GatewayServer(uint16_t port) {
                 break;
         }
     });
+
+    // Setup trade callback from matching engine
+    m_matching_engine->set_trade_callback([this](const Trade& trade) {
+        int buyer_fd = -1;
+        int seller_fd = -1;
+
+        // Look up FDs safely
+        {
+            std::lock_guard<Mutex> lock(m_session_mutex);
+            if (m_order_to_client.contains(trade.buy_order_id)) {
+                buyer_fd = m_order_to_client[trade.buy_order_id];
+            }
+            if (m_order_to_client.contains(trade.sell_order_id)) {
+                seller_fd = m_order_to_client[trade.sell_order_id];
+            }
+        }
+
+        // Notify buyer
+        if (buyer_fd != -1) {
+            send_trade_notification(buyer_fd, trade);
+        }
+        // Notify seller
+        if (seller_fd != -1) {
+            send_trade_notification(seller_fd, trade);
+        }
+    });
 }
 
 GatewayServer::~GatewayServer() {
     stop();
 }
 
-bool GatewayServer::start() {
-    if (!matching_engine_->start()) {
-        std::cerr << "Failed to start matching engine" << std::endl;
-        return false;
+GatewayServer::StartResult GatewayServer::start() {
+    // C++23 monadic operations could be used here (.and_then), but plain checks are readable too
+    
+    auto match_res = m_matching_engine->start();
+    if (!match_res) {
+        return std::unexpected("Failed to start matching engine: " + match_res.error());
     }
     
-    if (!tcp_server_->start()) {
-        std::cerr << "Failed to start TCP server" << std::endl;
-        matching_engine_->stop();
-        return false;
+    auto tcp_res = m_tcp_server->start();
+    if (!tcp_res) {
+        m_matching_engine->stop();
+        return std::unexpected("Failed to start TCP server: " + tcp_res.error());
     }
     
-    running_.store(true);
+    m_running.store(true);
     std::cout << "Gateway server started successfully" << std::endl;
-    return true;
+    return {};
 }
 
 void GatewayServer::stop() {
-    if (!running_.load()) {
+    if (!m_running.load()) {
         return;
     }
     
-    running_.store(false);
+    m_running.store(false);
     
-    if (tcp_server_) {
-        tcp_server_->stop();
+    if (m_tcp_server) {
+        m_tcp_server->stop();
     }
     
-    if (matching_engine_) {
-        matching_engine_->stop();
+    if (m_matching_engine) {
+        m_matching_engine->stop();
     }
     
-    client_sessions_.clear();
+    m_client_sessions.clear();
     std::cout << "Gateway server stopped" << std::endl;
 }
 
 void GatewayServer::handle_new_order(int client_fd, const NewOrder& order) {
     std::string symbol(order.symbol);
     
+    // Map order to client for future trade notifications
+    {
+        std::lock_guard<Mutex> lock(m_session_mutex);
+        m_order_to_client[order.order_id] = client_fd;
+    }
+    
     try {
         // Add order to matching engine
-        auto trades = matching_engine_->add_order(order.order_id, symbol, order.is_buy, 
-                                                  order.quantity, order.price);
+        trading::Order core_order(order.order_id, order.price, order.quantity, symbol, order.side == 'B');
+        m_matching_engine->add_order(core_order);
         
         // Send acceptance
-        send_order_ack(client_fd, order.order_id, true);
-        
-        // Send trade notifications
-        for (const auto& trade : trades) {
-            send_trade_notification(client_fd, trade);
-        }
+        send_order_ack(client_fd, order.order_id, true, "");
         
         std::cout << "New order processed: " << symbol << " " << order.quantity 
-                  << " @ " << order.price << (order.is_buy ? " BUY" : " SELL") << std::endl;
+                  << " @ " << order.price << (order.side == 'B' ? " BUY" : " SELL") << std::endl;
         
     } catch (const std::exception& e) {
         send_order_ack(client_fd, order.order_id, false, e.what());
@@ -125,9 +162,9 @@ void GatewayServer::handle_new_order(int client_fd, const NewOrder& order) {
 
 void GatewayServer::handle_cancel_order(int client_fd, const CancelOrder& order) {
     try {
-        bool success = matching_engine_->cancel_order(order.order_id);
+        bool success = m_matching_engine->cancel_order(order.order_id);
         send_order_ack(client_fd, order.order_id, success, 
-                      success ? "" : "Order not found");
+                      success ? "" : "Cancel request rejected (queue full)");
         
         std::cout << "Cancel order processed: " << order.order_id 
                   << (success ? " - Success" : " - Failed") << std::endl;
@@ -140,9 +177,9 @@ void GatewayServer::handle_cancel_order(int client_fd, const CancelOrder& order)
 
 void GatewayServer::handle_modify_order(int client_fd, const ModifyOrder& order) {
     try {
-        bool success = matching_engine_->modify_order(order.order_id, order.new_quantity, order.new_price);
+        bool success = m_matching_engine->modify_order(order.order_id, order.new_quantity, order.new_price);
         send_order_ack(client_fd, order.order_id, success, 
-                      success ? "" : "Order not found or invalid modification");
+                      success ? "" : "Modify request rejected (queue full)");
         
         std::cout << "Modify order processed: " << order.order_id 
                   << (success ? " - Success" : " - Failed") << std::endl;
@@ -192,16 +229,32 @@ std::string GatewayServer::generate_session_id() {
 
 void GatewayServer::register_client(int client_fd) {
     std::string session_id = generate_session_id();
-    client_sessions_[client_fd] = session_id;
-    
+    {
+        std::lock_guard<Mutex> lock(m_session_mutex);
+        m_client_sessions[client_fd] = session_id;
+    }
     std::cout << "Client registered: " << client_fd << " -> " << session_id << std::endl;
 }
 
 void GatewayServer::unregister_client(int client_fd) {
-    auto it = client_sessions_.find(client_fd);
-    if (it != client_sessions_.end()) {
-        std::cout << "Client unregistered: " << it->second << std::endl;
-        client_sessions_.erase(it);
+    std::string session_id;
+    {
+        std::lock_guard<Mutex> lock(m_session_mutex);
+        auto it = m_client_sessions.find(client_fd);
+        if (it != m_client_sessions.end()) {
+            session_id = it->second;
+            m_client_sessions.erase(it);
+        }
+        
+        // Clean up associated orders mapping
+        // Note: In high-load systems, we might use a separate index or lazy cleanup
+        std::erase_if(m_order_to_client, [client_fd](const auto& item) {
+            return item.second == client_fd;
+        });
+    }
+    
+    if (!session_id.empty()) {
+        std::cout << "Client unregistered: " << session_id << std::endl;
     }
 }
 

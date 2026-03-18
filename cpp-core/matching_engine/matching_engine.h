@@ -1,74 +1,54 @@
 #pragma once
 
 #include "order_book.h"
+#include "../lockfree_queue/lockfree_queue.h"
 #include <unordered_map>
-#include <memory>
-#include <mutex>
 #include <thread>
 #include <atomic>
-#include "../lockfree_queue/lockfree_queue.h"
+#include <string>
+#include <memory>
+#include <expected>
+#include <string>
+#include <functional>
+#include "../network/statsd_client.h"
 
 namespace trading {
 
 class MatchingEngine {
-private:
-    // Order books by symbol
-    std::unordered_map<std::string, std::shared_ptr<OrderBook>> order_books_;
-    
-    // Thread safety
-    mutable std::shared_mutex engine_mutex_;
-    
-    // Message queue for processing orders
-    LockFreeQueue<std::shared_ptr<Order>, 10000> order_queue_;
-    
-    // Worker threads
-    std::vector<std::thread> worker_threads_;
-    std::atomic<bool> running_{false};
-    
-    // Statistics
-    std::atomic<uint64_t> orders_processed_{0};
-    std::atomic<uint64_t> trades_executed_{0};
-    std::atomic<uint64_t> total_volume_{0};
-    
-    // Worker thread function
-    void process_orders();
-    
-    // Internal methods
-    std::shared_ptr<OrderBook> get_or_create_order_book(const std::string& symbol);
-    void handle_trade(const Trade& trade);
-    
 public:
+    using StartResult = std::expected<void, std::string>;
+    using OnTradeCallback = std::function<void(const Trade&)>;
+
     MatchingEngine();
     ~MatchingEngine();
-    
-    // Engine control
-    bool start();
+
+    [[nodiscard]] StartResult start();
     void stop();
-    bool is_running() const { return running_.load(); }
-    
-    // Order operations
-    std::vector<Trade> add_order(uint64_t order_id, const std::string& symbol, 
-                                bool is_buy, uint64_t quantity, uint64_t price);
+    void add_order(const Order& order);
     bool cancel_order(uint64_t order_id);
-    bool modify_order(uint64_t order_id, uint64_t new_quantity, uint64_t new_price);
+    bool modify_order(uint64_t order_id, uint32_t new_quantity, uint64_t new_price);
     
-    // Query operations
-    uint64_t get_best_bid(const std::string& symbol) const;
-    uint64_t get_best_ask(const std::string& symbol) const;
-    uint64_t get_spread(const std::string& symbol) const;
+    void set_trade_callback(OnTradeCallback callback);
+
+private:
+    void process_orders();
+
+    using AtomicBool = std::atomic<bool>;
+    using WorkerThread = std::thread;
+    using OrderQueue = LockFreeQueue<Order*, 10000>;
+    using Symbol = std::string;
+    using BookPtr = std::unique_ptr<OrderBook>;
+    using OrderBooks = std::unordered_map<Symbol, BookPtr>;
+    using OrderSymbolMap = std::unordered_map<uint64_t, Symbol>;
     
-    // Statistics
-    uint64_t get_orders_processed() const { return orders_processed_.load(); }
-    uint64_t get_trades_executed() const { return trades_executed_.load(); }
-    uint64_t get_total_volume() const { return total_volume_.load(); }
-    
-    // Market data
-    std::vector<std::string> get_symbols() const;
-    size_t get_order_count(const std::string& symbol) const;
-    
-    // Disable copy and assignment
-    MatchingEngine(const MatchingEngine&) = delete;
-    MatchingEngine& operator=(const MatchingEngine&) = delete;
+    AtomicBool m_running{false};
+    WorkerThread m_worker_thread;
+    OrderQueue m_order_queue;
+    OrderQueue m_free_list; // Reusable object pool
+    OrderBooks m_order_books;
+    OrderSymbolMap m_order_id_to_symbol;
+    OnTradeCallback m_trade_callback;
+    StatsDClient m_statsd;
 };
 
-} // namespace trading
+}
